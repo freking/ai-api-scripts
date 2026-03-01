@@ -1,0 +1,214 @@
+#!/usr/bin/env fish
+
+# ============================================================
+# aiprompt
+#
+# Default: stdout
+# File write requires: --write
+#
+# Environment:
+#   - fish shell
+#   - macOS
+#   - curl + jq
+#
+# Guarantees:
+#   - Exact multiline preservation
+#   - No bash-only features
+#   - Clean separation of concerns
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Configuration
+# ------------------------------------------------------------
+
+set OUTPUT_DIR "$HOME/Documents/openai"
+set LOG_DIR "$OUTPUT_DIR/_logs"
+set API_ENDPOINT "https://api.openai.com/v1/responses"
+
+set DEFAULT_MODEL "gpt-4.1-mini"
+set DEFAULT_TEMP 0.6
+
+mkdir -p $OUTPUT_DIR
+mkdir -p $LOG_DIR
+
+# ------------------------------------------------------------
+# 2. Argument Parsing
+# ------------------------------------------------------------
+
+set PROMPT ""
+set FILENAME ""
+set MODEL $DEFAULT_MODEL
+set TEMP $DEFAULT_TEMP
+set WRITE_MODE 0
+
+argparse 'p/prompt=' 'f/filename=' 'm/model=' 't/temp=' write -- $argv
+or exit 1
+
+if set -q _flag_prompt
+    set PROMPT $_flag_prompt
+end
+
+if set -q _flag_filename
+    set FILENAME $_flag_filename
+end
+
+if set -q _flag_model
+    set MODEL $_flag_model
+end
+
+if set -q _flag_temp
+    set TEMP $_flag_temp
+end
+
+if set -q _flag_write
+    set WRITE_MODE 1
+end
+
+# Enforce defaults if empty
+if test -z "$MODEL"
+    set MODEL $DEFAULT_MODEL
+end
+
+if test -z "$TEMP"
+    set TEMP $DEFAULT_TEMP
+end
+
+# Pipe support
+if test -z "$PROMPT"
+    if not isatty stdin
+        set PROMPT (cat | string collect)
+    end
+end
+
+if test -z "$PROMPT"
+    echo "Prompt required. Use -p or pipe input."
+    exit 1
+end
+
+if not set -q OPENAI_API_KEY
+    echo "OPENAI_API_KEY not set."
+    exit 1
+end
+
+# ------------------------------------------------------------
+# 3. Metadata + Filename Handling (only used if writing)
+# ------------------------------------------------------------
+
+set DATE (date "+%Y-%m-%d")
+set TIMESTAMP (date "+%Y%m%d-%H%M%S")
+set ISO_NOW (date -u "+%Y-%m-%dT%H:%M:%SZ")
+
+if test -z "$FILENAME"
+    set FILENAME (string sub -l 60 "$PROMPT")
+end
+
+set SLUG (echo $FILENAME \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+    | cut -c1-60)
+
+set FILE "$OUTPUT_DIR/$TIMESTAMP-$SLUG.md"
+
+# ------------------------------------------------------------
+# 4. Build JSON Payload
+# ------------------------------------------------------------
+
+set PAYLOAD (jq -n \
+    --arg model "$MODEL" \
+    --arg input "$PROMPT" \
+    --arg temp "$TEMP" \
+    '{
+        model: $model,
+        temperature: ($temp | tonumber),
+        input: $input
+    }')
+
+# ------------------------------------------------------------
+# 5. Call OpenAI API
+# ------------------------------------------------------------
+
+set RESPONSE (curl -sS $API_ENDPOINT \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $OPENAI_API_KEY" \
+    -d "$PAYLOAD")
+
+if printf "%s" "$RESPONSE" | jq -e '.error' >/dev/null
+    printf "%s\n" "$RESPONSE" | jq -r '.error.message'
+    exit 1
+end
+
+# ------------------------------------------------------------
+# 6. Extract Body (preserve multiline exactly)
+# ------------------------------------------------------------
+
+set BODY (printf "%s" "$RESPONSE" \
+    | jq -r '.output[0].content[0].text' \
+    | string collect)
+
+# ------------------------------------------------------------
+# 7. Extract Usage
+# ------------------------------------------------------------
+
+set PROMPT_TOKENS (printf "%s" "$RESPONSE" | jq -r '.usage.input_tokens // 0')
+set COMPLETION_TOKENS (printf "%s" "$RESPONSE" | jq -r '.usage.output_tokens // 0')
+set TOTAL_TOKENS (printf "%s" "$RESPONSE" | jq -r '.usage.total_tokens // 0')
+
+# ------------------------------------------------------------
+# 8. Log Usage 
+# ------------------------------------------------------------
+
+printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+    aiprompt \
+    "$ISO_NOW" \
+    "$MODEL" \
+    "$TEMP" \
+    "$PROMPT_TOKENS" \
+    "$COMPLETION_TOKENS" \
+    "$TOTAL_TOKENS" \
+    "$PROMPT" \
+    "$FILE" >>"$LOG_DIR/usage.log"
+
+# ------------------------------------------------------------
+# 9. Clipboard 
+# ------------------------------------------------------------
+
+if type -q pbcopy
+    printf "%s" "$BODY" | pbcopy
+end
+
+printf "Tokens: %s\n" "$TOTAL_TOKENS"
+
+printf "%s\n" "$BODY"
+exit 0
+
+# ------------------------------------------------------------
+# 10. Default: STDOUT
+# ------------------------------------------------------------
+
+if test $WRITE_MODE -eq 0
+    printf "%s\n" "$BODY"
+    exit 0
+end
+
+# ------------------------------------------------------------
+# 11. Write File (only if --write)
+# ------------------------------------------------------------
+
+printf "%s\n" --- >$FILE
+printf "%s\n" "title: \"$FILENAME\"" >>$FILE
+printf "%s\n" "prompt: \"$PROMPT\"" >>$FILE
+printf "%s\n" "date: $DATE" >>$FILE
+printf "%s\n" "created_utc: $ISO_NOW" >>$FILE
+printf "%s\n" "model: \"$MODEL\"" >>$FILE
+printf "%s\n" "temperature: $TEMP" >>$FILE
+printf "%s\n" "prompt_tokens: $PROMPT_TOKENS" >>$FILE
+printf "%s\n" "completion_tokens: $COMPLETION_TOKENS" >>$FILE
+printf "%s\n" "total_tokens: $TOTAL_TOKENS" >>$FILE
+printf "%s\n" --- >>$FILE
+printf "\n" >>$FILE
+
+printf "# %s\n\n" "$FILENAME" >>$FILE
+printf "%s\n" "$BODY" >>$FILE
+
+printf "Saved: %s\n" "$FILE"
+printf "Tokens: %s\n" "$TOTAL_TOKENS"
