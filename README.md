@@ -1,10 +1,22 @@
 # ai-api-scripts
 
-
 CLI Scripts for openai API, using fish, macOS, curl, jq.
 
+## Reminders
+```
+## give permissions
+chmod +x ~/.local/bin/aiquery
+chmod +x ~/.local/bin/aiprompt 
+## store key
+ set -Ux OPENAI_API_KEY sk-xxxxxxxxxxxxxxxx
+## make directories
+mkdir ~/Document/openai
+mkdir ~/Documents/openai/constraints
+mkdir ~/Documents/openai/_logs'''
+```
 # aiquery
-- Constraint file can be add to prompt. 
+- Constraint file can be add to prompt.
+  
 - creates log entry
 - outputs response to Mac clipboard
 - tracks token usage
@@ -35,7 +47,7 @@ aiquery -p "Robot vacuum market in China in 2026" \
 - tracks token usage
   
 ## Files:
-- Output ~/Documents/openai must use write flag
+- Output ~/Documents/openai           **only with write flag**
 - Logs ~/Documents/openai/_logs
  
 ## Arguments:
